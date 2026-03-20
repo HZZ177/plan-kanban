@@ -1,0 +1,38 @@
+{
+  "name": "plan-kanban-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "dev": "rsbuild dev",
+    "build": "rsbuild build",
+    "preview": "rsbuild preview",
+    "lint": "eslint \"./src/**/*.{ts,tsx,js,jsx,vue}\"",
+    "format": "prettier --write \"./src/**/*.{ts,tsx,js,jsx,vue,json,css,md}\"",
+    "test": "node -e \"console.log('frontend test contract reserved for later issues')\""
+  },
+  "dependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
+    "ant-design-vue": "^4.2.6",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.22",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@rsbuild/core": "^1.6.12",
+    "@rsbuild/plugin-vue": "^1.0.7",
+    "eslint": "^9.39.1",
+    "eslint-plugin-vue": "^10.5.1",
+    "globals": "^16.4.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.3",
+    "vue-tsc": "^3.1.1"
+  },
+  "engines": {
+    "node": ">=20.10.0",
+    "pnpm": ">=10.12.4"
+  }
+}

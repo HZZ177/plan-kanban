@@ -1,35 +1,26 @@
 <script setup lang="ts">
-/**
- * 表单组件
- * 
- * 使用示例：
- * <edit-form ref="editForm" :options="{ projects: projectList }" />
- * 
- * 选项数据加载示例：
- * const projectList = ref([]);
- * const loadProjects = async () => {
- *   const { data } = await ProjectApi.getList();
- *   projectList.value = data || [];
- * };
- */
-
-import dayjs, { Dayjs } from 'dayjs';
+import { computed, reactive } from 'vue';
+import { message } from 'ant-design-vue';
 import { {{apiModule}}Api } from '@/api';
 import { PAGE_NAME } from '../data';
 import useDrawer from '@/hooks/useDrawer.ts';
 import { useForm } from '@/hooks/useForm.ts';
 
-// 使用provide/inject时init可能会获取不到值
-const { drawer } = useDrawer(PAGE_NAME);
-
 const props = defineProps<{
   options?: Record<string, any[]>;
 }>();
 
-/**
- * 表单注册
- */
-const modelRef = reactive<Partial<{{apiModule}}EditType.Req>>({ annex: [] });
+type CreateMethod = typeof {{apiModule}}Api.{{apiCreateMethod}};
+type UpdateMethod = typeof {{apiModule}}Api.{{apiUpdateMethod}};
+type DetailMethod = typeof {{apiModule}}Api.{{apiDetailMethod}};
+type CreateReq = Parameters<CreateMethod>[0];
+type UpdateReq = Parameters<UpdateMethod>[0];
+type DetailRes = Awaited<ReturnType<DetailMethod>>['data'];
+type FormModel = Partial<CreateReq & UpdateReq>;
+
+const { drawer } = useDrawer(PAGE_NAME);
+
+const modelRef = reactive<FormModel>({});
 const schemas = computed<YcForm.Schema[]>(() => [
   {{#each fields}}
   {
@@ -46,62 +37,71 @@ const schemas = computed<YcForm.Schema[]>(() => [
       {{#if placeholder}}placeholder: '{{placeholder}}',{{/if}}
       {{#if options}}options: {{options}},{{/if}}
       {{#if componentProps}}{{{componentProps}}},{{/if}}
-    }
+    },
   }{{#unless @last}},{{/unless}}
   {{/each}}
 ]);
+
 const { validate, VBind, setFields } = useForm({
   schemas,
   modelRef,
   labelCol: { style: { width: '70px' } },
 });
 
-/**
- * 获取详情
- */
-const detail = ref<Partial<{{apiModule}}GetDetailType.Res>>({});
 const getDetail = async () => {
-  const { data } = await {{apiModule}}Api.{{apiDetailMethod}}(drawer.record?.id || '');
-  detail.value = data || {};
-  setFields(detail.value);
+  const recordId = drawer.record?.{{recordKey}};
+  if (!recordId) return;
+  const { data } = await {{apiModule}}Api.{{apiDetailMethod}}(recordId);
+  Object.assign(modelRef, (data || {}) as DetailRes);
+  setFields(data || {});
 };
 
-/**
- * 保存--返回 Promise.resolve() 或 Promise.reject()
- */
 const save = async () => {
   await validate();
   drawer.showSpinning();
+
   if (drawer.mode === 'add') {
-    const { code } = await {{apiModule}}Api.{{apiCreateMethod}}(modelRef);
+    const { code } = await {{apiModule}}Api.{{apiCreateMethod}}(
+      modelRef as CreateReq,
+    );
     if (code === 200) {
       message.success('新增成功');
-    } else return Promise.reject();
+      return;
+    }
+    return Promise.reject();
   }
+
   if (drawer.mode === 'edit') {
-    const { code } = await {{apiModule}}Api.{{apiUpdateMethod}}(modelRef);
+    const { code } = await {{apiModule}}Api.{{apiUpdateMethod}}(
+      modelRef as UpdateReq,
+    );
     if (code === 200) {
-      message.success('修改成功');
-      return Promise.resolve();
-    } else return Promise.reject();
+      message.success('编辑成功');
+      return;
+    }
   }
+
+  return Promise.reject();
 };
 
-/**
- * 初始化
- */
 const init = async () => {
   try {
     drawer.showSpinning();
-    const promises: Promise<any>[] = [];
+    const tasks: Promise<unknown>[] = [];
+
+    void props;
+    // Load remote options here when needed, then push the promises into tasks.
+
     if (drawer.mode === 'edit') {
-      promises.push(getDetail());
+      tasks.push(getDetail());
     }
-    await Promise.all(promises);
+
+    await Promise.all(tasks);
   } finally {
     drawer.hideSpinning();
   }
 };
+
 init();
 
 defineExpose({ save });
@@ -109,7 +109,7 @@ defineExpose({ save });
 
 <template>
   <div>
-    <yc-form v-bind="VBind"></yc-form>
+    <yc-form v-bind="VBind" />
   </div>
 </template>
 

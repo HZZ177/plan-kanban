@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue';
-import { Modal } from 'ant-design-vue';
+import { Modal, message } from 'ant-design-vue';
+import { useTable } from '@kt/unity-hooks';
+import type { UseTableOptions } from '@kt/unity-hooks/src/useTable/types';
 import { columns, PAGE_NAME, searchSchema, statusOptions } from './data';
 import EditForm from './components/EditForm.vue';
-import type { UseTableOptions } from '@kt/unity-hooks/src/useTable/types';
+import DetailForm from './components/DetailForm.vue';
 import { {{apiModule}}Api } from '@/api';
 import { getLabelByValue } from '@/utils';
 import useDrawer from '@/hooks/useDrawer.ts';
@@ -11,51 +13,55 @@ import { useForm } from '@/hooks/useForm.ts';
 
 defineOptions({ name: PAGE_NAME });
 
-// const router = useRouter();
+type ListMethod = typeof {{apiModule}}Api.{{apiListMethod}};
+type ListReq = Parameters<ListMethod>[0];
+type ListRes = Awaited<ReturnType<ListMethod>>['data'];
+type SearchParams = Partial<
+  Omit<ListReq, '{{currentKey}}' | '{{pageSizeKey}}'>
+>;
+type TableRecord = ListRes extends { records: infer T extends readonly unknown[] }
+  ? T[number]
+  : ListRes extends { items: infer U extends readonly unknown[] }
+    ? U[number]
+    : ListRes extends { list: infer V extends readonly unknown[] }
+      ? V[number]
+      : Record<string, any>;
 
-/**@desc 筛选项 - 根据 searchSchema 自动生成初始值 */
-const inParams = reactive<{{apiModule}}GetTableType.InParams>({
-  // 初始值由 searchSchema 中的字段决定
-  // 字符串类型默认为 ''，数组类型默认为 []
+const inParams = reactive<SearchParams>({
   {{inParamsFields}}
 });
+
 const { VBind: searchVBind, resetFields: reset } = useForm({
   schemas: searchSchema,
   modelRef: inParams,
-  // 为false时默认支持url参数
   isForm: false,
-  // 输入框回车时会触发
-  onEnter: () => search(),
 });
 
-/**@desc 表格数据
- * */
 const tableOptions = reactive<UseTableOptions>({
-  currentKey: 'pageNo',
-  pageSizeKey: 'pageSize',
-  dataSourceKey: 'records',
-  totalKey: 'total',
+  currentKey: '{{currentKey}}',
+  pageSizeKey: '{{pageSizeKey}}',
+  dataSourceKey: '{{dataSourceKey}}',
+  totalKey: '{{totalKey}}',
   immediate: false,
   columns,
   inParams,
 });
-const getTableData = async (params: {{apiModule}}GetTableType.Req) => {
+
+const getTableData = async (params: ListReq) => {
   const { data } = await {{apiModule}}Api.{{apiListMethod}}(params);
   return data;
 };
-const { VBind, VOn, search, run, pagination, dataSource } = useTable(
-  getTableData,
-  tableOptions,
-);
 
-/**@desc 表格操作
- * */
-// 删除
-const handleDel = (row: any) => {
+const { VBind, VOn, search } = useTable(getTableData, tableOptions);
+
+const handleDel = (row: TableRecord) => {
   Modal.confirm({
-    title: `确定删除？`,
+    title: '确认删除该记录？',
     onOk: async () => {
-      const { code } = await {{apiModule}}Api.{{apiDeleteMethod}}(row.id);
+      // If the delete API does not accept a raw id, adjust this call after generation.
+      const { code } = await {{apiModule}}Api.{{apiDeleteMethod}}(
+        row.{{recordKey}} as never,
+      );
       if (code === 200) {
         message.success('操作成功');
         await search();
@@ -64,32 +70,29 @@ const handleDel = (row: any) => {
     cancelText: '取消',
   });
 };
-// 跳转
-const handleToPro = (row: {{apiModule}}GetTableType.record) => {
-  // 示例
-  // router.push('/demo/detail')
+
+const handleToPro = (row: TableRecord) => {
+  void row;
+  // router.push('/example/detail');
 };
 
-/**@desc 抽屉
- * */
 const { drawer } = useDrawer(PAGE_NAME);
-const editForm = ref();
+const editForm = ref<{ save: () => Promise<void> } | null>(null);
+
 const handleSave = async () => {
   try {
     await editForm.value?.save();
     drawer.close();
-    search();
+    await search();
   } finally {
     drawer.hideSpinning();
   }
 };
 
-/**
- * 初始化--所有进入页面时就执行的逻辑都放在这里
- */
 const init = async () => {
   await search();
 };
+
 init();
 </script>
 
@@ -106,7 +109,7 @@ init();
       </tl-filter>
 
       <tl-table :visibleColumns="[0, 1, 2]">
-        <a-table v-on="VOn" v-bind="VBind">
+        <a-table v-on="VOn" v-bind="VBind" :columns="columns">
           <template #bodyCell="{ column: { dataIndex }, record, text }">
             <template v-if="dataIndex === 'status'">
               <yc-status
@@ -149,17 +152,20 @@ init();
     >
       <template #buttons>
         <a-button
+          v-if="['edit', 'add'].includes(drawer.mode)"
           type="primary"
           @click="handleSave"
-          v-if="['edit', 'add'].includes(drawer.mode)"
         >
-          {{ '保存' }}
+          保存
         </a-button>
-        <a-button @click="drawer.close">{{ '返回' }}</a-button>
+        <a-button @click="drawer.close">返回</a-button>
       </template>
 
-      <!--     修改-->
-      <edit-form ref="editForm" v-if="['edit', 'add'].includes(drawer.mode)" />
+      <DetailForm v-if="drawer.mode === 'detail'" />
+      <EditForm
+        v-if="['edit', 'add'].includes(drawer.mode)"
+        ref="editForm"
+      />
     </tl-drawer>
   </tl>
 </template>
