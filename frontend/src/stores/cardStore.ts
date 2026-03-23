@@ -7,6 +7,7 @@ import { getDiffFile, getDiffFiles } from '../services/api/diff'
 import { getStageFileContent, getStageFiles } from '../services/api/files'
 import { getKanban } from '../services/api/kanban'
 import { getCardProcess } from '../services/api/process'
+import { getRecoverySnapshot } from '../services/api/recovery'
 import type {
   AcceptanceSummary,
   CardDetail,
@@ -18,9 +19,13 @@ import type {
   StageFileItem,
   StageKey,
 } from '../services/api/types'
+import type { PatchEvent } from '../services/ws/patchClient'
+import { useJsonPatchStream } from '../services/ws/useJsonPatchStream'
+import { useProjectStore } from './projectStore'
 import { useWorkspaceStore } from './workspaceStore'
 
 export type PriorityKey = 'P0' | 'P1' | 'P2'
+export type BoardFilterKey = 'in-progress' | 'acceptance'
 
 export type StageInfo = {
   key: StageKey
@@ -42,11 +47,32 @@ export type CardItem = {
 }
 
 export type WorkspaceMessage = {
-  role: 'user' | 'assistant' | 'tool' | 'thinking'
+  id: string
+  role: 'user' | 'assistant' | 'tool' | 'thinking' | 'ghost'
   label: string
   time: string
   content: string
+  entryType?: string
+  streaming?: boolean
+  isFinished?: boolean
   output?: string
+  payload?: Record<string, unknown> | null
+  ghostKind?: 'thinking' | 'tool_use' | 'tool_result' | 'summary'
+}
+
+function buildAssistantPlaceholder(): WorkspaceMessage {
+  return {
+    id: `transient-assistant-${Date.now()}`,
+    role: 'ghost',
+    label: 'Claude Code',
+    time: formatTime(null),
+    content: 'Claude 正在思考',
+    entryType: 'thinking',
+    ghostKind: 'thinking',
+    streaming: true,
+    isFinished: false,
+    payload: null,
+  }
 }
 
 export type StageAction = {
@@ -94,33 +120,179 @@ function formatTime(value: string | null): string {
   })
 }
 
-function mapEntryToMessage(entry: ConversationEntry): WorkspaceMessage {
-  const time = formatTime(entry.created_at)
+function buildGhostSummary(entry: ConversationEntry): string {
+  const payload = entry.payload ?? {}
+  if (entry.entry_type === 'tool_use') {
+    const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : '工具'
+    const toolInput = payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input as Record<string, unknown> : {}
+    if (typeof toolInput.description === 'string' && toolInput.description) {
+      return `${toolName} · ${toolInput.description}`
+    }
+    if (typeof toolInput.command === 'string' && toolInput.command) {
+      return `${toolName} · ${toolInput.command}`
+    }
+    if (typeof toolInput.url === 'string' && toolInput.url) {
+      return `${toolName} · ${toolInput.url}`
+    }
+    if (typeof toolInput.question === 'string' && toolInput.question) {
+      return `${toolName} · ${toolInput.question}`
+    }
+    return toolName
+  }
+  if (entry.entry_type === 'tool_result') {
+    const isError = Boolean(payload.is_error)
+    return isError ? '工具调用失败' : '工具调用完成'
+  }
+  if (entry.entry_type === 'summary') {
+    return entry.content || '执行摘要'
+  }
+  return entry.content || 'Claude 正在思考'
+}
 
-  if (entry.entry_type === 'tool_use' || entry.entry_type === 'tool_result') {
+function buildGhostPayload(entry: ConversationEntry): Record<string, unknown> | null {
+  const payload = entry.payload ?? {}
+  if (entry.entry_type === 'tool_use') {
     return {
-      role: 'tool',
-      label: entry.role || '工具',
+      tool_id: payload.tool_id,
+      tool_name: payload.tool_name,
+      tool_input: payload.tool_input,
+    }
+  }
+  if (entry.entry_type === 'tool_result') {
+    return {
+      tool_use_id: payload.tool_use_id,
+      is_error: payload.is_error,
+      tool_use_result: payload.tool_use_result,
+      raw_block: payload.raw_block,
+    }
+  }
+  if (entry.entry_type === 'summary') {
+    return payload
+  }
+  return payload
+}
+
+function groupGhostMessages(messages: WorkspaceMessage[]): WorkspaceMessage[] {
+  const grouped: WorkspaceMessage[] = []
+  const toolIndexById = new Map<string, number>()
+
+  messages.forEach((message) => {
+    if (message.role !== 'ghost' || (message.entryType !== 'tool_use' && message.entryType !== 'tool_result')) {
+      grouped.push(message)
+      return
+    }
+
+    const payload = message.payload ?? {}
+    const toolId = typeof payload.tool_id === 'string'
+      ? payload.tool_id
+      : typeof payload.tool_use_id === 'string'
+        ? payload.tool_use_id
+        : ''
+
+    if (message.entryType === 'tool_use') {
+      grouped.push({
+        ...message,
+        streaming: true,
+        isFinished: false,
+      })
+      if (toolId) {
+        toolIndexById.set(toolId, grouped.length - 1)
+      }
+      return
+    }
+
+    const groupedIndex = toolId ? toolIndexById.get(toolId) : undefined
+    if (groupedIndex == null) {
+      grouped.push(message)
+      return
+    }
+
+    const existing = grouped[groupedIndex]
+    grouped[groupedIndex] = {
+      ...existing,
+      content: `${existing.content}${payload.tool_result_error ?? payload.is_error ? ' · 失败' : ' · 完成'}`,
+      payload: {
+        ...(existing.payload ?? {}),
+        tool_result_content: message.content,
+        tool_result_error: Boolean(payload.is_error),
+        tool_result: payload.tool_use_result ?? null,
+      },
+      streaming: false,
+      isFinished: true,
+      ghostKind: 'tool_use',
+    }
+  })
+
+  return grouped
+}
+
+function mapEntryToMessage(entry: ConversationEntry, entries: ConversationEntry[], processState: ProcessState | null, activeSessionId: string | null): WorkspaceMessage | null {
+  const time = formatTime(entry.updated_at || entry.created_at)
+  const lastAssistantEntry = [...entries].reverse().find((item) => item.entry_type === 'assistant_text' || item.entry_type === 'error')
+  const isActiveSession = Boolean(activeSessionId && entry.session_id === activeSessionId)
+  const isStreaming = Boolean(
+    isActiveSession
+      && processState?.active_process_status === 'running'
+      && entry.role !== 'user'
+      && lastAssistantEntry?.id === entry.id,
+  )
+
+  if (entry.entry_type === 'tool_use' || entry.entry_type === 'tool_result' || entry.entry_type === 'summary') {
+    return {
+      id: entry.id,
+      role: 'ghost',
+      label: 'Claude Code',
       time,
-      content: entry.content || '',
-      output: JSON.stringify(entry.payload ?? {}, null, 2),
+      content: buildGhostSummary(entry),
+      entryType: entry.entry_type,
+      payload: buildGhostPayload(entry),
+      ghostKind: entry.entry_type as 'tool_use' | 'tool_result' | 'summary',
+      streaming: entry.entry_type === 'tool_use' && isActiveSession && processState?.active_process_status === 'running',
+      isFinished: entry.entry_type !== 'tool_use' || !isStreaming,
     }
   }
 
   if (entry.entry_type === 'thinking') {
     return {
-      role: 'thinking',
-      label: entry.role || 'Claude Code',
+      id: entry.id,
+      role: 'ghost',
+      label: 'Claude Code',
       time,
-      content: entry.content || '正在整理中...',
+      content: entry.content || 'Claude 正在思考',
+      entryType: entry.entry_type,
+      payload: entry.payload,
+      ghostKind: 'thinking',
+      streaming: true,
+      isFinished: false,
     }
   }
 
+  if (entry.entry_type === 'error') {
+    return {
+      id: entry.id,
+      role: 'assistant',
+      label: 'Claude Code',
+      time,
+      content: entry.content || '执行失败',
+      entryType: entry.entry_type,
+      streaming: isStreaming,
+      isFinished: !isStreaming,
+    }
+  }
+
+  if (entry.entry_type !== 'user_message' && entry.entry_type !== 'assistant_text') {
+    return null
+  }
+
   return {
+    id: entry.id,
     role: entry.role === 'user' ? 'user' : 'assistant',
     label: entry.role === 'user' ? '用户' : 'Claude Code',
     time,
     content: entry.content || '',
+    entryType: entry.entry_type,
+    streaming: entry.role === 'user' ? false : isStreaming,
+    isFinished: entry.role === 'user' ? true : !isStreaming,
   }
 }
 
@@ -142,7 +314,7 @@ export const useCardStore = defineStore('cardStore', {
   state: () => ({
     stages: [] as KanbanStage[],
     cards: [] as CardItem[],
-    boardFilter: 'all' as 'all' | 'in-progress' | 'acceptance',
+    boardFilters: [] as BoardFilterKey[],
     searchQuery: '',
     activeCardId: null as string | null,
     activeCardDetail: null as CardDetail | null,
@@ -150,11 +322,12 @@ export const useCardStore = defineStore('cardStore', {
     activeSessions: [] as SessionRecord[],
     activeSessionId: null as string | null,
     activeEntries: [] as ConversationEntry[],
+    transientMessages: [] as WorkspaceMessage[],
     stageFiles: [] as StageFileItem[],
     selectedFilePath: '',
     selectedFileContent: '',
     acceptanceSummary: null as AcceptanceSummary | null,
-    diffFiles: [] as StageFileItem[],
+    diffFiles: [] as Array<StageFileItem & { issue_id?: string; source?: string; dev_state?: string; test_state?: string }>,
     selectedDiff: null as DiffPreview | null,
     loadingCards: false,
     loadingWorkspace: false,
@@ -165,16 +338,27 @@ export const useCardStore = defineStore('cardStore', {
     workspaceError: '',
     actionError: '',
     creatingCard: false,
+    lastRecovery: null as Record<string, unknown> | null,
+    wsClients: {} as Record<string, { connect: (path: string) => void; disconnect: () => void }>,
   }),
   getters: {
     filteredCards(state): CardItem[] {
       const keyword = state.searchQuery.trim().toLowerCase()
+      const hasFilters = state.boardFilters.length > 0
       return state.cards.filter((card) => {
-        if (state.boardFilter === 'in-progress' && !['plan', 'contract', 'developing'].includes(card.currentStage)) {
-          return false
-        }
-        if (state.boardFilter === 'acceptance' && card.currentStage !== 'acceptance') {
-          return false
+        if (hasFilters) {
+          const matchesStage = state.boardFilters.some((filter) => {
+            if (filter === 'in-progress') {
+              return ['plan', 'contract', 'developing'].includes(card.currentStage)
+            }
+            if (filter === 'acceptance') {
+              return card.currentStage === 'acceptance'
+            }
+            return false
+          })
+          if (!matchesStage) {
+            return false
+          }
         }
         if (!keyword) {
           return true
@@ -212,13 +396,19 @@ export const useCardStore = defineStore('cardStore', {
       return '当前阶段没有可读取的文件内容。'
     },
     workspaceMessages(state): WorkspaceMessage[] {
-      return state.activeEntries.map(mapEntryToMessage)
+      const persistedMessages = state.activeEntries
+        .map((entry) => mapEntryToMessage(entry, state.activeEntries, state.activeProcessState, state.activeSessionId))
+        .filter((item): item is WorkspaceMessage => item !== null)
+      return groupGhostMessages([...persistedMessages, ...state.transientMessages])
     },
     workspaceResult(): string {
+      if (this.acceptanceSummary?.runtime) {
+        return `总计 ${this.acceptanceSummary.runtime.total} / 已完成 ${this.acceptanceSummary.runtime.completed} / 失败 ${this.acceptanceSummary.runtime.failed} / 阻塞 ${this.acceptanceSummary.runtime.blocked}`
+      }
       return ''
     },
     hasWorkspaceResult(): boolean {
-      return false
+      return Boolean(this.workspaceResult)
     },
     canEditAcceptanceSubstate(): boolean {
       return this.activeCard?.currentStage === 'acceptance' && Boolean(this.acceptanceSummary)
@@ -243,11 +433,85 @@ export const useCardStore = defineStore('cardStore', {
     },
   },
   actions: {
+    clearTransientMessages() {
+      this.transientMessages = []
+    },
+    ensureWsClient(channel: string) {
+      if (this.wsClients[channel]) {
+        return this.wsClients[channel]
+      }
+      const client = useJsonPatchStream((event: PatchEvent) => this.handleWsEvent(event))
+      this.wsClients[channel] = client
+      return client
+    },
+    connectWorkspaceStreams() {
+      this.ensureWsClient('conversation').connect('/ws/conversation')
+      this.ensureWsClient('process').connect('/ws/process')
+      this.ensureWsClient('issues').connect('/ws/issues')
+      this.ensureWsClient('files').connect('/ws/files')
+      this.ensureWsClient('kanban').connect('/ws/kanban')
+    },
+    disconnectWorkspaceStreams() {
+      Object.values(this.wsClients).forEach((client) => client.disconnect())
+      this.wsClients = {}
+    },
+    async handleWsEvent(event: PatchEvent) {
+      const payload = event.payload || {}
+      const projectStore = useProjectStore()
+      if (event.channel === 'process' && this.activeCardId && payload.card_id === this.activeCardId) {
+        this.activeProcessState = {
+          active_process_type: String(payload.active_process_type || this.activeProcessState?.active_process_type || 'none'),
+          active_process_status: String(payload.active_process_status || this.activeProcessState?.active_process_status || 'idle'),
+          active_process_session_id: payload.active_process_session_id ? String(payload.active_process_session_id) : null,
+        }
+        if (this.activeProcessState.active_process_status !== 'running') {
+          this.clearTransientMessages()
+        }
+      }
+      if (event.channel === 'issues' && this.activeCardId && payload.card_id === this.activeCardId && Array.isArray(payload.items)) {
+        this.diffFiles = payload.items as Array<StageFileItem & { issue_id?: string; source?: string; dev_state?: string; test_state?: string }>
+      }
+      if (event.channel === 'files' && this.activeCardId && payload.card_id === this.activeCardId && Array.isArray(payload.files)) {
+        this.stageFiles = payload.files as StageFileItem[]
+      }
+      if (
+        event.channel === 'kanban'
+        && Array.isArray(payload.stages)
+        && (!payload.project_id || String(payload.project_id) === projectStore.activeProjectId)
+      ) {
+        this.stages = payload.stages as KanbanStage[]
+        this.cards = this.stages.flatMap((stage) => stage.items.map(toCardItem))
+      }
+      if (
+        event.channel === 'conversation'
+        && this.activeCardId
+        && payload.card_id === this.activeCardId
+        && payload.session_id
+        && String(payload.session_id) === this.activeSessionId
+      ) {
+        if (payload.entry) {
+          const entry = payload.entry as ConversationEntry
+          const existingIndex = this.activeEntries.findIndex((item) => item.id === entry.id)
+          if (existingIndex >= 0) {
+            const next = [...this.activeEntries]
+            next[existingIndex] = entry
+            this.activeEntries = next
+          } else {
+            this.activeEntries = [...this.activeEntries, entry]
+          }
+          if (entry.entry_type === 'assistant_text' || entry.entry_type === 'error') {
+            this.clearTransientMessages()
+          }
+        } else {
+          await this.loadSessionEntries(this.activeSessionId)
+        }
+      }
+    },
     setActiveCard(cardId: string | null) {
       this.activeCardId = cardId
     },
-    setBoardFilter(filter: 'all' | 'in-progress' | 'acceptance') {
-      this.boardFilter = filter
+    setBoardFilters(filters: BoardFilterKey[]) {
+      this.boardFilters = [...filters]
     },
     setSearchQuery(query: string) {
       this.searchQuery = query
@@ -291,6 +555,7 @@ export const useCardStore = defineStore('cardStore', {
           priority,
           raw_requirement: rawRequirement,
         })
+        useProjectStore().setActiveProjectId(projectId)
         await this.refreshBoard()
         await this.selectCard(payload.id)
       } catch (error) {
@@ -304,7 +569,8 @@ export const useCardStore = defineStore('cardStore', {
       this.loadingCards = true
       this.boardError = ''
       try {
-        const payload = await getKanban()
+        const projectId = useProjectStore().activeProjectId
+        const payload = await getKanban(projectId)
         this.stages = payload.stages
         this.cards = payload.stages.flatMap((stage) => stage.items.map(toCardItem))
       } catch (error) {
@@ -329,12 +595,13 @@ export const useCardStore = defineStore('cardStore', {
       this.loadingWorkspace = true
       this.workspaceError = ''
       this.actionError = ''
+      this.clearTransientMessages()
+      workspace.open('')
       try {
         await this.loadCardWorkspace(cardId)
-        workspace.open(this.selectedFilePath)
+        this.connectWorkspaceStreams()
       } catch (error) {
         this.workspaceError = error instanceof Error ? error.message : '加载工作区失败'
-        workspace.open('')
         throw error
       } finally {
         this.loadingWorkspace = false
@@ -355,56 +622,88 @@ export const useCardStore = defineStore('cardStore', {
       this.stageFiles = files
       this.cards = this.cards.map((item) => (item.id === card.id ? toCardItem(card) : item))
 
-      if (this.activeSessionId) {
-        this.activeEntries = await getSessionEntries(this.activeSessionId)
-      } else {
-        this.activeEntries = []
-      }
-
       if (files.length) {
         const defaultFile = files.find((item) => item.exists)?.path ?? files[0].path
-        await this.selectFile(defaultFile)
+        this.selectedFilePath = defaultFile
+        this.selectedFileContent = ''
+        useWorkspaceStore().setActiveFile(defaultFile)
+        void this.selectFile(defaultFile, cardId)
       } else {
         this.selectedFilePath = ''
         this.selectedFileContent = ''
       }
 
+      if (this.activeSessionId) {
+        void this.loadSessionEntries(this.activeSessionId, cardId)
+      } else {
+        this.activeEntries = []
+        this.lastRecovery = null
+      }
+
       if (card.current_stage === 'acceptance') {
-        this.acceptanceSummary = await getAcceptanceSummary(cardId)
-        this.diffFiles = await getDiffFiles(cardId)
-        if (this.acceptanceSummary.preview?.path) {
-          this.selectedDiff = await getDiffFile(cardId, this.acceptanceSummary.preview.path)
-        } else {
-          this.selectedDiff = null
-        }
+        void this.loadAcceptanceWorkspace(cardId)
       } else {
         this.acceptanceSummary = null
         this.diffFiles = []
         this.selectedDiff = null
       }
     },
-    async selectFile(filePath: string) {
-      if (!this.activeCardId || !filePath) {
+    async loadAcceptanceWorkspace(cardId: string) {
+      const acceptanceSummary = await getAcceptanceSummary(cardId)
+      const diffFiles = await getDiffFiles(cardId)
+      if (this.activeCardId !== cardId) {
+        return
+      }
+      this.acceptanceSummary = acceptanceSummary
+      this.diffFiles = diffFiles
+      if (acceptanceSummary.preview?.path) {
+        this.selectedDiff = await getDiffFile(cardId, acceptanceSummary.preview.path)
+        if (this.activeCardId !== cardId) {
+          return
+        }
+      } else {
+        this.selectedDiff = null
+      }
+    },
+    async selectFile(filePath: string, cardId = this.activeCardId) {
+      if (!cardId || !filePath) {
         return
       }
       const workspace = useWorkspaceStore()
       this.loadingFile = true
       try {
-        const payload = await getStageFileContent(this.activeCardId, filePath)
+        const payload = await getStageFileContent(cardId, filePath)
+        if (this.activeCardId !== cardId) {
+          return
+        }
         this.selectedFilePath = payload.path
         this.selectedFileContent = payload.content
         workspace.setActiveFile(payload.path)
       } catch (error) {
+        if (this.activeCardId !== cardId) {
+          return
+        }
         this.selectedFilePath = filePath
         this.selectedFileContent = error instanceof Error ? error.message : '读取文件失败'
         workspace.setActiveFile(filePath)
       } finally {
-        this.loadingFile = false
+        if (this.activeCardId === cardId) {
+          this.loadingFile = false
+        }
       }
     },
-    async loadSessionEntries(sessionId: string) {
+    async loadSessionEntries(sessionId: string, cardId = this.activeCardId) {
       this.activeSessionId = sessionId
-      this.activeEntries = await getSessionEntries(sessionId)
+      this.clearTransientMessages()
+      const entries = await getSessionEntries(sessionId)
+      if (!cardId || this.activeCardId !== cardId || this.activeSessionId !== sessionId) {
+        return
+      }
+      this.activeEntries = entries
+      this.lastRecovery = await getRecoverySnapshot(cardId, sessionId)
+      if (!cardId || this.activeCardId !== cardId || this.activeSessionId !== sessionId) {
+        return
+      }
     },
     async selectDiffFile(filePath: string) {
       if (!this.activeCardId) {
@@ -426,13 +725,20 @@ export const useCardStore = defineStore('cardStore', {
       }
       this.loadingChat = true
       this.actionError = ''
+      this.clearTransientMessages()
+      this.transientMessages = [buildAssistantPlaceholder()]
       try {
         const payload = await sendCardMessage(this.activeCardId, message, this.activeSessionId)
         this.activeSessionId = payload.session.id
-        this.activeEntries = await getSessionEntries(payload.session.id)
+        this.activeEntries = payload.entries
         this.activeSessions = await getCardSessions(this.activeCardId)
-        this.activeProcessState = await getCardProcess(this.activeCardId)
+        this.activeProcessState = {
+          active_process_type: 'conversation',
+          active_process_status: 'running',
+          active_process_session_id: payload.session.id,
+        }
       } catch (error) {
+        this.clearTransientMessages()
         this.actionError = error instanceof Error ? error.message : '发送消息失败'
         throw error
       } finally {

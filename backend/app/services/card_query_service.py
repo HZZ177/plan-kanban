@@ -28,8 +28,11 @@ def card_to_detail_payload(card: Card) -> dict[str, Any]:
     }
 
 
-async def list_cards(session: AsyncSession) -> list[dict[str, Any]]:
-    result = await session.execute(select(Card).where(Card.archived.is_(False)).order_by(Card.sort_order.asc(), Card.created_at.asc()))
+async def list_cards(session: AsyncSession, project_id: str | None = None) -> list[dict[str, Any]]:
+    stmt = select(Card).where(Card.archived.is_(False))
+    if project_id:
+        stmt = stmt.where(Card.project_id == project_id)
+    result = await session.execute(stmt.order_by(Card.sort_order.asc(), Card.created_at.asc()))
     return [card_to_detail_payload(card) for card in result.scalars().all()]
 
 

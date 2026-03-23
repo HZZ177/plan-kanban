@@ -1,8 +1,18 @@
 <template>
   <div class="result-card">
     <div v-if="hasBody" class="result-block">
-      <div class="section-title">结构化结果</div>
+      <div class="section-title">运行摘要</div>
       <div class="result-body">{{ body }}</div>
+    </div>
+
+    <div v-if="acceptanceSummary" class="result-block">
+      <div class="section-title">验收摘要</div>
+      <div class="result-body">
+        当前状态：{{ acceptanceSummary.acceptance_substate || '未设置' }}
+        <template v-if="acceptanceSummary.runtime">
+          · 总计 {{ acceptanceSummary.runtime.total }} / 已完成 {{ acceptanceSummary.runtime.completed }} / 失败 {{ acceptanceSummary.runtime.failed }} / 阻塞 {{ acceptanceSummary.runtime.blocked }}
+        </template>
+      </div>
     </div>
 
     <div v-if="canEditAcceptanceSubstate || diffFiles.length || selectedDiff" class="acceptance-box">
@@ -12,13 +22,14 @@
       </div>
 
       <div v-if="diffFiles.length" class="acceptance-section">
-        <div class="section-title">验收相关文件</div>
+        <div class="section-title">变更文件</div>
         <DiffFileList :files="diffFiles" :active-path="selectedDiff?.path || ''" @select="$emit('select-diff', $event)" />
       </div>
 
       <div v-if="selectedDiff" class="acceptance-section">
-        <div class="section-title">文件内容预览</div>
+        <div class="section-title">Diff 预览</div>
         <div class="diff-path">{{ selectedDiff.path }}</div>
+        <div v-if="selectedDiff.summary" class="diff-summary">{{ selectedDiff.summary }}</div>
         <pre>{{ selectedDiff.diff }}</pre>
       </div>
     </div>
@@ -95,7 +106,8 @@ defineEmits(['select-diff', 'change-substate'])
   color: #3b4d63;
 }
 
-.result-body {
+.result-body,
+.diff-summary {
   font-size: 12px;
   line-height: 1.7;
   color: #46607f;

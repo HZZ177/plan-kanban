@@ -1,6 +1,8 @@
 <template>
   <div class="app-shell">
-    <div class="top-strip">Plan Kanban · 内部需求协同平台</div>
+    <div class="top-strip">
+      Plan Kanban · 内部需求协同平台
+    </div>
     <ProjectHeader />
     <WorkspaceShell />
   </div>

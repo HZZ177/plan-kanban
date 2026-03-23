@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,8 +23,11 @@ class CardStageUpdateSchema(BaseModel):
 
 
 @router.get("", response_model=list[CardDetailSchema])
-async def list_card_route(session: AsyncSession = Depends(get_db_session)) -> list[dict]:
-    return await list_cards(session)
+async def list_card_route(
+    project_id: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict]:
+    return await list_cards(session, project_id=project_id)
 
 
 @router.get("/{card_id}", response_model=CardDetailSchema)

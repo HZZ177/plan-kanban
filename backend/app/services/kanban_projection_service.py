@@ -6,6 +6,10 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.services.card_query_service import list_cards
+from backend.app.services.event_publish_service import publish_channel_event
+from backend.app.ws.event_schema import build_ws_event
+from common.core.logger import logger
+from common.core.request_context import set_request_context
 
 STAGE_ORDER = ["raw", "plan", "contract", "developing", "acceptance"]
 STAGE_TITLES = {
@@ -17,8 +21,8 @@ STAGE_TITLES = {
 }
 
 
-async def get_kanban_projection(session: AsyncSession) -> dict[str, list[dict[str, Any]]]:
-    cards = await list_cards(session)
+async def get_kanban_projection(session: AsyncSession, project_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
+    cards = await list_cards(session, project_id=project_id)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for card in cards:
         grouped[card["current_stage"]].append(card)
@@ -32,4 +36,8 @@ async def get_kanban_projection(session: AsyncSession) -> dict[str, list[dict[st
         }
         for stage in STAGE_ORDER
     ]
-    return {"stages": stages}
+    payload = {"stages": stages, "project_id": project_id}
+    set_request_context(channel="kanban")
+    logger.info("Built kanban projection project_id={} stage_count={} card_count={}", project_id, len(stages), len(cards))
+    await publish_channel_event("kanban", build_ws_event("kanban.updated", "kanban", payload))
+    return payload

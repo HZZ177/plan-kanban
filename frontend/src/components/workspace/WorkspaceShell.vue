@@ -1,11 +1,34 @@
 <template>
-  <div class="main" :class="{ expanded: workspace.expanded }" :style="workspace.expanded ? { '--workspace-width': `${workspace.width}px` } : undefined">
-    <section class="board-area" aria-label="业务阶段看板">
+  <div
+    class="main"
+    :class="{ expanded: workspace.expanded }"
+    :style="mainStyle"
+  >
+    <section
+      class="board-area"
+      aria-label="业务阶段看板"
+    >
       <BoardScrollContainer />
     </section>
-    <SplitterHandle v-if="workspace.expanded" />
-    <aside v-if="workspace.expanded" class="workspace-shell" aria-label="阶段工作区">
-      <WorkspaceHeader :stage-title="activeStage?.title ?? ''" :title="activeCard?.title ?? ''" :process-state="store.activeProcessState" @close="closeWorkspace" />
+    <SplitterHandle
+      v-show="workspace.present"
+      :class="{ visible: workspace.expanded }"
+    />
+    <aside
+      v-show="workspace.present"
+      class="workspace-shell"
+      :class="{ visible: workspace.expanded }"
+      aria-label="阶段工作区"
+    >
+      <WorkspaceHeader
+        :stage-title="activeStage?.title ?? ''"
+        :title="activeCard?.title ?? ''"
+        :priority="activeCard?.priority ?? ''"
+        :owner="activeCard?.owner ?? ''"
+        :file-count="store.stageFiles.length"
+        :process-state="store.activeProcessState"
+        @close="closeWorkspace"
+      />
       <div class="workspace-grid">
         <ContextPane
           :title="activeCard?.title ?? ''"
@@ -48,7 +71,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useCardStore } from '../../stores/cardStore'
 import { useWorkspaceStore } from '../../stores/workspaceStore'
@@ -63,6 +86,15 @@ const store = useCardStore()
 const workspace = useWorkspaceStore()
 const { activeCard, activeStage } = storeToRefs(store)
 const composerValue = ref('')
+
+const mainStyle = computed(() => {
+  if (!workspace.present) {
+    return undefined
+  }
+  return {
+    '--workspace-width': `${workspace.width}px`,
+  }
+})
 
 watch(
   () => store.activeCardId,
@@ -84,10 +116,11 @@ const onSubmitChat = async () => {
   if (!message) {
     return
   }
+  composerValue.value = ''
   try {
     await store.sendChat(message)
-    composerValue.value = ''
   } catch (error) {
+    composerValue.value = message
     showErrorMessage(error, '发送消息失败')
   }
 }
@@ -138,9 +171,10 @@ const closeWorkspace = () => {
 .main {
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: 1fr 0 0;
   overflow: hidden;
   background: #f7f7f5;
+  transition: grid-template-columns 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .main.expanded {
@@ -167,6 +201,14 @@ const closeWorkspace = () => {
   overflow: hidden;
   background: #fafaf9;
   border-left: 1px solid #ddddda;
+  opacity: 0;
+  transform: translateX(26px);
+  transition: opacity 300ms cubic-bezier(0.22, 1, 0.36, 1), transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.workspace-shell.visible {
+  opacity: 1;
+  transform: translateX(0);
 }
 
 .workspace-grid {
@@ -174,6 +216,13 @@ const closeWorkspace = () => {
   display: grid;
   grid-template-columns: minmax(300px, 0.95fr) minmax(320px, 1.05fr);
   overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .main,
+  .workspace-shell {
+    transition: none;
+  }
 }
 
 @media (max-width: 1100px) {
@@ -187,6 +236,11 @@ const closeWorkspace = () => {
 
   .workspace-shell {
     border-left: 0;
+    transform: translateY(14px);
+  }
+
+  .workspace-shell.visible {
+    transform: translateY(0);
   }
 
   .workspace-grid {
@@ -194,4 +248,3 @@ const closeWorkspace = () => {
   }
 }
 </style>
-

@@ -9,6 +9,12 @@ def get_project_root() -> Path:
     return get_settings().project_root
 
 
+def get_logs_path() -> Path:
+    path = get_settings().log_dir_path
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def resolve_project_path(relative_path: str) -> Path:
     path = Path(relative_path)
     if path.is_absolute():
@@ -19,3 +25,6 @@ def resolve_project_path(relative_path: str) -> Path:
 def ensure_parent_directory(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+logs_path = get_logs_path()

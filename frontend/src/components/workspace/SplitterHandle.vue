@@ -16,14 +16,27 @@ import { onBeforeUnmount } from 'vue'
 import { useWorkspaceStore } from '../../stores/workspaceStore'
 
 const workspace = useWorkspaceStore()
+let pendingWidth = 0
+let frameId = null
+
+const flushWidth = () => {
+  frameId = null
+  if (!workspace.dragging) {
+    return
+  }
+  workspace.setWidth(pendingWidth)
+}
 
 const onMouseMove = (event) => {
   if (!workspace.dragging) {
     return
   }
 
-  const width = window.innerWidth - event.clientX
-  workspace.setWidth(width)
+  pendingWidth = window.innerWidth - event.clientX
+  if (frameId !== null) {
+    return
+  }
+  frameId = requestAnimationFrame(flushWidth)
 }
 
 const stopDrag = () => {
@@ -31,6 +44,11 @@ const stopDrag = () => {
     return
   }
 
+  if (frameId !== null) {
+    cancelAnimationFrame(frameId)
+    frameId = null
+  }
+  workspace.setWidth(pendingWidth || workspace.width)
   workspace.setDragging(false)
   document.body.style.cursor = ''
 }
@@ -40,6 +58,7 @@ const startDrag = (event) => {
     return
   }
 
+  pendingWidth = workspace.width
   workspace.setDragging(true)
   document.body.style.cursor = 'col-resize'
   event.preventDefault()
@@ -65,6 +84,9 @@ window.addEventListener('mousemove', onMouseMove)
 window.addEventListener('mouseup', stopDrag)
 
 onBeforeUnmount(() => {
+  if (frameId !== null) {
+    cancelAnimationFrame(frameId)
+  }
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', stopDrag)
 })
@@ -78,6 +100,12 @@ onBeforeUnmount(() => {
   border-right: 1px solid #ddddda;
   cursor: col-resize;
   user-select: none;
+  opacity: 0;
+  transition: opacity 300ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms ease;
+}
+
+.splitter.visible {
+  opacity: 1;
 }
 
 .splitter::before {
@@ -100,5 +128,11 @@ onBeforeUnmount(() => {
 .splitter:focus-visible {
   outline: 2px solid rgba(76, 139, 245, 0.26);
   outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splitter {
+    transition: none;
+  }
 }
 </style>

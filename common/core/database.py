@@ -49,17 +49,31 @@ async def ensure_schema() -> None:
 
         result = await conn.exec_driver_sql("PRAGMA table_info(cards)")
         columns = {row[1] for row in result.fetchall()}
-        if not columns:
-            return
+        if columns:
+            missing_columns = {
+                "summary": "summary TEXT NOT NULL DEFAULT ''",
+                "owner": "owner VARCHAR(255) NOT NULL DEFAULT ''",
+                "priority": "priority VARCHAR(16) NOT NULL DEFAULT 'P1'",
+            }
+            for column_name, ddl in missing_columns.items():
+                if column_name not in columns:
+                    await conn.exec_driver_sql(f"ALTER TABLE cards ADD COLUMN {ddl}")
 
-        missing_columns = {
-            "summary": "summary TEXT NOT NULL DEFAULT ''",
-            "owner": "owner VARCHAR(255) NOT NULL DEFAULT ''",
-            "priority": "priority VARCHAR(16) NOT NULL DEFAULT 'P1'",
-        }
-        for column_name, ddl in missing_columns.items():
-            if column_name not in columns:
-                await conn.exec_driver_sql(f"ALTER TABLE cards ADD COLUMN {ddl}")
+        result = await conn.exec_driver_sql("PRAGMA table_info(execution_processes)")
+        execution_columns = {row[1] for row in result.fetchall()}
+        if execution_columns:
+            missing_execution_columns = {
+                "pid": "pid INTEGER",
+                "last_error": "last_error TEXT",
+            }
+            for column_name, ddl in missing_execution_columns.items():
+                if column_name not in execution_columns:
+                    await conn.exec_driver_sql(f"ALTER TABLE execution_processes ADD COLUMN {ddl}")
+
+        result = await conn.exec_driver_sql("PRAGMA table_info(execution_process_logs)")
+        log_columns = {row[1] for row in result.fetchall()}
+        if log_columns and "sequence" not in log_columns:
+            await conn.exec_driver_sql("ALTER TABLE execution_process_logs ADD COLUMN sequence INTEGER NOT NULL DEFAULT 1")
 
 
 async def create_tables() -> None:

@@ -1,10 +1,17 @@
 <template>
   <div class="message-item thinking">
-    <div class="message-head"><span>{{ label }}</span><span>{{ time }}</span></div>
+    <div class="message-head">
+      <span>{{ label }}</span>
+      <span>{{ time }}</span>
+    </div>
     <div class="message-body">
       <span class="thinking-row">
         <span>{{ content }}</span>
-        <span class="thinking-dots"><span></span><span></span><span></span></span>
+        <span class="thinking-dots">
+          <span></span>
+          <span></span>
+          <span></span>
+        </span>
       </span>
     </div>
   </div>
@@ -29,10 +36,13 @@ defineProps({
 
 <style scoped>
 .message-item {
+  min-width: 0;
+  max-width: 100%;
   padding: 10px;
   border: 1px solid #f2df9f;
   border-radius: 8px;
   background: #fffdf7;
+  overflow: hidden;
 }
 
 .message-head {
@@ -46,6 +56,8 @@ defineProps({
 }
 
 .message-body {
+  min-width: 0;
+  max-width: 100%;
   font-size: 12px;
   line-height: 1.7;
   color: #4f535b;
@@ -56,6 +68,9 @@ defineProps({
   align-items: center;
   gap: 8px;
   color: #8a6b12;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .thinking-dots {
@@ -86,7 +101,6 @@ defineProps({
     opacity: 0.35;
     transform: translateY(0);
   }
-
   50% {
     opacity: 1;
     transform: translateY(-1px);

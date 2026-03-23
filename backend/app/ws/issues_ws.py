@@ -1,14 +1,32 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from backend.app.ws.event_schema import build_ws_event
+from backend.app.ws.event_bus import GLOBAL_EVENT_BUS
+from backend.app.ws.patch_stream import build_ready_event
+from common.core.logger import logger
+from common.core.request_context import clear_request_context, set_request_context
 
 router = APIRouter()
 
 
+# issues 频道负责推送 execute 过程中生成的 issue 状态变化。
 @router.websocket("/issues")
 async def issues_ws(websocket: WebSocket) -> None:
-    await websocket.accept()
-    await websocket.send_json(build_ws_event("issues.updated", "issues", {"connected": True}))
-    await websocket.close()
+    trace_id = websocket.query_params.get("trace_id")
+    request_id = websocket.query_params.get("request_id")
+    set_request_context(trace_id=trace_id, request_id=request_id, channel="issues", transport="ws")
+    logger.info("收到 WebSocket 连接请求 channel=issues trace_id={} request_id={}", trace_id, request_id)
+    await GLOBAL_EVENT_BUS.connect("issues", websocket)
+    try:
+        await websocket.send_json(build_ready_event("issues", {"connected": True}))
+        logger.info("已发送 WebSocket 就绪事件 channel=issues")
+        await GLOBAL_EVENT_BUS.keepalive(websocket, "issues")
+    except WebSocketDisconnect as exc:
+        logger.info("WebSocket 已断开 channel=issues code={}", exc.code)
+    except Exception:
+        logger.exception("issues WebSocket 循环执行失败")
+        raise
+    finally:
+        GLOBAL_EVENT_BUS.disconnect("issues", websocket)
+        clear_request_context()

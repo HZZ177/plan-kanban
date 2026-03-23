@@ -7,10 +7,14 @@
           placeholder="输入消息..."
           @input="$emit('update:modelValue', $event.target.value)"
           @keydown.enter.exact.prevent="$emit('submit')"
-        ></textarea>
+        />
       </div>
     </div>
-    <ComposerSubmitRow :disabled="disabled" :submitting="submitting" @submit="$emit('submit')" />
+    <ComposerSubmitRow
+      :disabled="disabled"
+      :submitting="submitting"
+      @submit="$emit('submit')"
+    />
   </div>
 </template>
 
@@ -37,17 +41,18 @@ defineEmits(['update:modelValue', 'submit'])
 
 <style scoped>
 .composer-panel {
-  flex: 0 0 auto;
+  height: 100%;
   width: 100%;
+  min-width: 0;
   overflow: hidden;
-  border-top: 1px solid #ddddda;
   background: #fafaf9;
   display: flex;
   flex-direction: column;
 }
 
 .composer-wrap {
-  flex: 0 0 auto;
+  flex: 1;
+  min-height: 0;
   padding: 12px 14px 12px;
   background: #fafaf9;
   width: 100%;
@@ -56,6 +61,9 @@ defineEmits(['update:modelValue', 'submit'])
 
 .composer-box {
   width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
   max-width: 100%;
   border: 1px solid #ddddda;
   border-radius: 8px;
@@ -66,28 +74,28 @@ defineEmits(['update:modelValue', 'submit'])
 
 textarea {
   width: 100%;
+  height: 100%;
   max-width: 100%;
   min-width: 0;
-  min-height: 120px;
+  min-height: 0;
   resize: none;
   border: 0;
   padding: 12px 14px;
   line-height: 1.7;
+  font-size: 12px;
   display: block;
   background: #ffffff;
   box-sizing: border-box;
   color: #232427;
+  overflow: auto;
+}
+
+textarea::placeholder {
+  color: #9aa0a8;
 }
 
 textarea:focus-visible {
   outline: 2px solid rgba(76, 139, 245, 0.26);
   outline-offset: -2px;
 }
-
-@media (max-width: 520px) {
-  textarea {
-    min-height: 104px;
-  }
-}
 </style>
-

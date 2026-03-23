@@ -9,6 +9,7 @@ from backend.app.api.file_router import router as file_router
 from backend.app.api.health_router import router as health_router
 from backend.app.api.kanban_router import router as kanban_router
 from backend.app.api.process_router import router as process_router
+from backend.app.api.recovery_router import router as recovery_router
 from backend.app.api.session_router import router as session_router
 
 api_router = APIRouter(prefix="/api")
@@ -22,3 +23,4 @@ api_router.include_router(diff_router)
 api_router.include_router(acceptance_router)
 api_router.include_router(action_router)
 api_router.include_router(kanban_router)
+api_router.include_router(recovery_router)

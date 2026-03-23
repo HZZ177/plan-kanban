@@ -20,6 +20,7 @@ ALLOWED_ENTRY_TYPES = {
 }
 
 
+# 会话条目服务负责持久化聊天消息，并支持同一 assistant 回复的增量合并。
 def conversation_entry_to_payload(entry: ConversationEntry) -> dict[str, Any]:
     return {
         "id": entry.id,
@@ -69,6 +70,57 @@ async def create_conversation_entry(
     session.add(entry)
     await session.flush()
     return entry
+
+
+async def merge_conversation_entry(
+    session: AsyncSession,
+    session_id: str,
+    entry_type: str,
+    role: str,
+    content: str | None = None,
+    payload: dict[str, Any] | None = None,
+    execution_process_id: str | None = None,
+    merge_key: str | None = None,
+) -> ConversationEntry:
+    if not merge_key:
+        return await create_conversation_entry(
+            session,
+            session_id,
+            entry_type=entry_type,
+            role=role,
+            content=content,
+            payload=payload,
+            execution_process_id=execution_process_id,
+        )
+
+    result = await session.execute(
+        select(ConversationEntry)
+        .where(
+            ConversationEntry.session_id == session_id,
+            ConversationEntry.execution_process_id == execution_process_id,
+            ConversationEntry.entry_type == entry_type,
+        )
+        .order_by(ConversationEntry.created_at.desc(), ConversationEntry.id.desc())
+        .limit(1)
+    )
+    existing = result.scalar_one_or_none()
+    existing_merge_key = existing.payload.get("merge_key") if existing and isinstance(existing.payload, dict) else None
+    if existing is not None and existing_merge_key == merge_key:
+        existing.content = content
+        existing.payload = payload
+        existing.updated_at = datetime.now(timezone.utc)
+        await session.flush()
+        return existing
+
+    return await create_conversation_entry(
+        session,
+        session_id,
+        entry_type=entry_type,
+        role=role,
+        content=content,
+        payload=payload,
+        execution_process_id=execution_process_id,
+    )
 
 
 async def list_conversation_entries(session: AsyncSession, session_id: str) -> list[dict[str, Any]]:

@@ -28,8 +28,7 @@ async def generate_contract_precheck_route(card_id: str, session: AsyncSession =
 
 @router.post("/cards/{card_id}/generate-contract")
 async def generate_contract_route(card_id: str, session: AsyncSession = Depends(get_db_session)) -> dict:
-    await start_plan_process(session, card_id)
-    return await finish_plan_process(session, card_id)
+    return await start_plan_process(session, card_id)
 
 
 @router.post("/cards/{card_id}/generate-contract/fail")
@@ -48,8 +47,7 @@ async def start_development_precheck_route(card_id: str, session: AsyncSession =
 
 @router.post("/cards/{card_id}/start-development")
 async def start_development_route(card_id: str, session: AsyncSession = Depends(get_db_session)) -> dict:
-    await start_execute_process(session, card_id)
-    return await finish_execute_process(session, card_id)
+    return await start_execute_process(session, card_id)
 
 
 @router.post("/cards/{card_id}/start-development/fail")

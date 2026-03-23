@@ -82,17 +82,27 @@ export type ProcessState = {
 export type AcceptanceSummary = {
   card_id: string
   current_stage: StageKey
-  changed_files: StageFileItem[]
+  changed_files: Array<StageFileItem & { issue_id?: string; source?: string; dev_state?: string; test_state?: string }>
   preview: {
     path: string
     diff: string
     line_count: number
+    summary?: string
   } | null
   acceptance_substate: string | null
+  runtime?: {
+    issues_path: string
+    total: number
+    completed: number
+    failed: number
+    blocked: number
+  } | null
+  can_rollback?: boolean
 }
 
 export type DiffPreview = {
   path: string
   diff: string
   line_count: number
+  summary?: string
 }
